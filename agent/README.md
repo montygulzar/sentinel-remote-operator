@@ -47,16 +47,27 @@ intended to be provided by a private overlay network (e.g. Tailscale) plus
 Sentinel's own authentication — never by exposing an unauthenticated endpoint
 to the public Internet.
 
-## Provisioning the Operator
+## Pairing an Operator
 
-Print the device credential to configure an Operator client:
+An Operator joins by pairing, initiated by the owner on the local machine:
 
 ```sh
-sentinel-agent credential [-config PATH]
+sentinel-agent pair [-config PATH]     # opens a window, prints a one-time code
+sentinel-agent devices [-config PATH]  # lists authorized devices (no secrets)
+sentinel-agent revoke -id <deviceId>   # revokes a device immediately
 ```
 
-This is the only command that emits the secret; it goes to stdout and is never
-written to the audit log.
+`pair` opens a short-lived pairing window and prints a one-time code for the
+owner to enter into their Operator. The Operator then calls `POST /v1/pair`,
+signing the request with the code. On success Sentinel registers a new device
+and both sides independently derive the permanent per-device key from the code
+and two exchanged nonces — the key is **never transmitted**. Each device gets a
+stable id; many devices are supported; any one can be revoked.
+
+These owner commands talk to the running agent over loopback and authenticate
+with the owner/admin key read from the protected local store. No permanent
+device secret is ever printed or logged; the only material shown is the
+ephemeral pairing code.
 
 ## Configuration
 
@@ -68,16 +79,39 @@ rejected to catch typos. Example:
   "deviceName": "",
   "listen": "127.0.0.1:8787",
   "dataDir": "C:\\ProgramData\\Sentinel",
+  "adminLoopbackOnly": true,
   "panic": { "closeApps": ["chrome.exe", "slack.exe"] },
   "auth": { "timestampSkew": "30s" },
+  "pairing": { "ttl": "5m" },
   "log": { "retentionDays": 30 }
 }
 ```
 
 - `deviceName` — overrides the reported host name; empty uses the real one.
+- `listen` — bind address. Default is loopback; set to an overlay-network
+  address (e.g. the host's Tailscale IP) for remote reach. Binding beyond
+  loopback is logged; authentication is required regardless of where the agent
+  binds.
+- `adminLoopbackOnly` — when true (default), owner/admin endpoints (pairing,
+  device management) are accepted only from the local machine, so pairing and
+  revocation cannot be driven remotely even with the admin key.
 - `panic.closeApps` — executable image names closed by PANIC, in order.
 - `auth.timestampSkew` — maximum accepted age/future-dating of a signed request.
+- `pairing.ttl` — how long an owner-initiated pairing window stays open.
 - `log.retentionDays` — daily log files older than this are deleted (0 keeps all).
+
+## Authorized devices and transport
+
+Authorized Operator devices live in a registry at `dataDir/devices.json`; each
+per-device key is encrypted at rest (DPAPI local-machine scope on Windows;
+owner-only file permissions elsewhere during development). The owner/admin key
+in `dataDir/admin.key` is protected the same way. Secrets are never logged and
+never returned by any endpoint.
+
+Remote reach is intended to come from a private overlay network (e.g.
+Tailscale) plus Sentinel's own authentication. Sentinel does not open router
+ports, use UPnP, or create public tunnels, and network membership alone never
+grants access — every request is independently authenticated.
 
 ## Authentication
 
@@ -103,9 +137,13 @@ lines joined by `\n`:
 <hex(sha256(body))>
 ```
 
-The server rejects (HTTP 401) an unknown device, a bad signature, a timestamp
+The key is the per-device key for device requests, the admin key for
+`/v1/admin/*` requests, and the one-time code for `/v1/pair`. The server rejects
+(HTTP 401) an unknown device, a revoked device, a bad signature, a timestamp
 outside `timestampSkew`, or a reused nonce — all with the same opaque message so
-a caller cannot distinguish the cause.
+a caller cannot distinguish the cause. Nonce replay protection is namespaced per
+principal and consumed atomically, so concurrent replays of one request yield at
+most one success.
 
 ## API (Milestone 1 subset)
 
@@ -121,7 +159,17 @@ rejected (401 auth, 400 malformed, 404/405 routing).
 | `GET /v1/logs?limit=&class=` | recent audit events, optionally filtered by class |
 | `POST /v1/control/lock` | lock the workstation |
 | `POST /v1/control/mute` | mute system audio; body `{"muted":false}` unmutes |
-| `POST /v1/control/panic` | run the PANIC preset: close configured apps, volume → 0, lock; returns per-step results |
+| `POST /v1/control/panic` | run the PANIC preset: close configured apps, volume → 0, lock; returns per-step results (per-application detail under the close step) |
+
+Pairing and owner/admin surface:
+
+| Method & path | Auth | Purpose |
+| --- | --- | --- |
+| `POST /v1/pair` | pairing code | complete pairing; returns the new device id and key-derivation material |
+| `POST /v1/admin/pairing/start` | admin + loopback | open a pairing window; returns the one-time code |
+| `POST /v1/admin/pairing/cancel` | admin + loopback | close the pairing window |
+| `GET /v1/admin/devices` | admin + loopback | list authorized devices (no secrets) |
+| `POST /v1/admin/devices/revoke` | admin + loopback | revoke a device by id, effective immediately |
 
 ## Testing
 
@@ -133,7 +181,12 @@ go test -race ./...      # with the race detector
 GOOS=windows GOARCH=amd64 go vet ./...
 ```
 
-Tests cover authentication (valid/forged/tampered/stale/replayed requests and
-the credential store), PANIC sequencing (ordering, per-step failure reporting,
-securing the host even when a step fails), audit logging (format, rotation,
-retention, ring buffer), and the full HTTP surface end-to-end.
+Tests cover authentication (valid / forged / tampered / stale / replayed /
+unknown-device / revoked requests, concurrent-replay races), device pairing
+(success, expiry, wrong-code attempt cap, single-use, replay, key-derivation
+parity, no-secrets-in-logs), the device registry (multi-device isolation,
+revocation, protected persistence round-trip), PANIC sequencing (ordering,
+attempting every configured app despite individual failures, still muting and
+locking after a close failure), audit logging (format, rotation, retention, ring
+buffer), and the full HTTP surface end-to-end including pairing, immediate
+revocation and the admin loopback restriction.
