@@ -68,4 +68,16 @@ final class CredentialAndPairingTests: XCTestCase {
         XCTAssertFalse(constantTimeEquals(Data([1, 2, 3]), Data([1, 2])))
         XCTAssertTrue(constantTimeEquals(Data([1, 2, 3]), Data([1, 2, 3])))
     }
+
+    // Regression guard for the Swift access-control defect found on the Xcode
+    // gate: PairingService's public initializer has a default argument that
+    // references PairingService.secureRandom, so that helper must be public or
+    // the package fails to compile. Constructing the service with all defaults
+    // exercises exactly that default-argument path.
+    func testPairingServiceDefaultInitializerCompilesAndRuns() {
+        let service = PairingService(store: InMemoryCredentialStore())
+        _ = service
+        let nonce = PairingService.secureRandom(16)
+        XCTAssertEqual(nonce.count, 16)
+    }
 }

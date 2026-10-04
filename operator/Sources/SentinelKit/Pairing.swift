@@ -140,7 +140,9 @@ public final class PairingService: @unchecked Sendable {
         return device
     }
 
-    static func secureRandom(_ n: Int) -> Data {
+    // public so the public initializer's default argument may reference it
+    // (a default value is API-facing and cannot see internal symbols).
+    public static func secureRandom(_ n: Int) -> Data {
         var bytes = [UInt8](repeating: 0, count: n)
         for i in 0..<n { bytes[i] = UInt8.random(in: 0...255) }
         return Data(bytes)
