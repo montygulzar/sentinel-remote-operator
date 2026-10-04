@@ -27,18 +27,22 @@ type harness struct {
 	adminKey []byte
 	fake     *platform.Fake
 	log      *audit.Logger
+	dataRoot string
 	nonce    int
 }
 
 func newHarness(t *testing.T, fake *platform.Fake) *harness {
 	t.Helper()
-	log, err := audit.New(t.TempDir(), 0)
+	// A single writable root holding both the audit logs and the device
+	// registry, so a test can scan everything the agent may persist.
+	dataRoot := t.TempDir()
+	log, err := audit.New(filepath.Join(dataRoot, "Logs"), 0)
 	if err != nil {
 		t.Fatalf("audit.New: %v", err)
 	}
 	t.Cleanup(func() { log.Close() })
 
-	reg, err := auth.OpenRegistry(filepath.Join(t.TempDir(), "devices.json"), auth.NewProtector())
+	reg, err := auth.OpenRegistry(filepath.Join(dataRoot, "devices.json"), auth.NewProtector())
 	if err != nil {
 		t.Fatalf("OpenRegistry: %v", err)
 	}
@@ -55,7 +59,7 @@ func newHarness(t *testing.T, fake *platform.Fake) *harness {
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &harness{srv: srv, reg: reg, devID: "dev-1", devKey: devKey, adminKey: adminKey, fake: fake, log: log}
+	return &harness{srv: srv, reg: reg, devID: "dev-1", devKey: devKey, adminKey: adminKey, fake: fake, log: log, dataRoot: dataRoot}
 }
 
 func randomKey(t *testing.T) []byte {

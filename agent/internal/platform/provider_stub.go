@@ -38,3 +38,6 @@ func (s *stub) Lock() error                 { return ErrUnavailable }
 func (s *stub) SetVolume(percent int) error { return ErrUnavailable }
 func (s *stub) SetMuted(muted bool) error   { return ErrUnavailable }
 func (s *stub) CloseApp(name string) error  { return ErrUnavailable }
+
+func (s *stub) Displays() ([]DisplayInfo, error)      { return nil, ErrUnavailable }
+func (s *stub) CaptureFrame(id string) (Frame, error) { return Frame{}, ErrUnavailable }

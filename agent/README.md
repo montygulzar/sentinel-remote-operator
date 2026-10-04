@@ -145,6 +145,30 @@ a caller cannot distinguish the cause. Nonce replay protection is namespaced per
 principal and consumed atomically, so concurrent replays of one request yield at
 most one success.
 
+## Grab Screen
+
+`GET /v1/screen/grab` captures a single frame of a display into memory, encodes
+it, and returns it directly as the response body (spec §5, §11). The flow is
+capture → memory → encode → transmit → discard: no screenshot file is ever
+written to disk, and nothing lands in Desktop, Downloads or Pictures. On
+Windows the capture uses the documented GDI `BitBlt` path (a normal, supported
+mechanism — not a graphics hook and not a secure-desktop grab); a surface the OS
+protects comes back blank or fails, and that is reported honestly rather than
+bypassed.
+
+- `display` (optional) selects a display by id; the primary display is the
+  default. `GET` the grab response headers to see which display was captured;
+  multi-display selection is built in but the Operator currently uses the
+  primary. Capture is `IMPLEMENTED — NEEDS WINDOWS VERIFICATION` (the pixel grab
+  runs only on Windows; its logic, routing and encoding are tested on any host
+  via the fake provider).
+- `format` is `jpeg` (default) or `png`; `quality` is `1..100` for JPEG.
+- Success is `200` with an `image/jpeg` or `image/png` body and
+  `X-Sentinel-Capture-Display/Width/Height/Format/Timestamp/Ms` plus
+  `X-Sentinel-Encode-Ms` headers. A capture the host cannot perform returns a
+  non-2xx JSON rejection (`503` unavailable, `404` unknown display), never a
+  blank success.
+
 ## API (Milestone 1 subset)
 
 A 2xx response means the request was accepted and processed; its body carries
@@ -157,6 +181,7 @@ rejected (401 auth, 400 malformed, 404/405 routing).
 | `GET /v1/status` | device name, session lock state, idle/uptime seconds, CPU/RAM/battery percent (null when unavailable) |
 | `GET /v1/activity` | session state, foreground app, idle seconds |
 | `GET /v1/logs?limit=&class=` | recent audit events, optionally filtered by class |
+| `GET /v1/screen/grab?display=&format=&quality=` | capture one current screen frame and return it as a binary image (default JPEG) with capture metadata in `X-Sentinel-Capture-*` headers |
 | `POST /v1/control/lock` | lock the workstation |
 | `POST /v1/control/mute` | mute system audio; body `{"muted":false}` unmutes |
 | `POST /v1/control/panic` | run the PANIC preset: close configured apps, volume → 0, lock; returns per-step results (per-application detail under the close step) |
@@ -190,3 +215,17 @@ attempting every configured app despite individual failures, still muting and
 locking after a close failure), audit logging (format, rotation, retention, ring
 buffer), and the full HTTP surface end-to-end including pairing, immediate
 revocation and the admin loopback restriction.
+
+Grab Screen is covered too: the endpoint's authentication (an unsigned request
+is rejected and never triggers a capture), image encoding/decoding round-trips,
+the primary-display default and explicit display selection, an invalid display
+(404), honest capture-error propagation (503), format/quality validation, and a
+check that a normal grab leaves no image artifact anywhere in the agent's data
+tree.
+
+The request-signing algorithm is pinned by a shared, locked vector file
+(`internal/auth/testdata/signing_vectors.json`): `TestSigningVectorsAreReproducedExactly`
+holds the Go agent to it, and the Swift Operator's suite holds the client to the
+same bytes, so the two languages are guaranteed to produce identical signatures.
+Regenerate the vectors (only when the algorithm deliberately changes) with
+`go run ./cmd/genvec`.

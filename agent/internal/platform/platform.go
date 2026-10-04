@@ -9,13 +9,21 @@
 // invented. Actions that the host cannot perform return ErrUnavailable.
 package platform
 
-import "errors"
+import (
+	"errors"
+	"image"
+	"time"
+)
 
 // ErrUnavailable is returned by a Provider when a requested capability is not
 // supported on the current host (for example, audio control on a headless
 // server). Callers surface this to the Operator as UNAVAILABLE rather than
 // pretending the action succeeded.
 var ErrUnavailable = errors.New("capability unavailable")
+
+// ErrNoSuchDisplay is returned by CaptureFrame when the requested display id
+// does not match any connected display.
+var ErrNoSuchDisplay = errors.New("no such display")
 
 // SessionState is the lock state of the interactive desktop session.
 type SessionState string
@@ -48,6 +56,58 @@ type Activity struct {
 	IdleSeconds *int64       `json:"idleSeconds"`
 }
 
+// resolveDisplay selects the display a CaptureFrame call targets. An empty id
+// selects the display marked primary (or the first, if none is marked); a
+// non-empty id must match a display exactly. It is shared by every Provider
+// implementation so the default/selection rule is identical on all of them.
+func resolveDisplay(displays []DisplayInfo, id string) (DisplayInfo, bool) {
+	if len(displays) == 0 {
+		return DisplayInfo{}, false
+	}
+	if id == "" {
+		for _, d := range displays {
+			if d.Primary {
+				return d, true
+			}
+		}
+		return displays[0], true
+	}
+	for _, d := range displays {
+		if d.ID == id {
+			return d, true
+		}
+	}
+	return DisplayInfo{}, false
+}
+
+// DisplayInfo describes one connected display. ID is a stable string the
+// Operator passes back to CaptureFrame to select a display; Primary marks the
+// default display captured when no id is requested. Multi-display support is
+// built in from the start so Grab Screen is not a single-display dead end
+// (THIRD ARTILLERY ORDER), while display selection beyond the primary default
+// is left to a later Operator capability.
+type DisplayInfo struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Primary bool   `json:"primary"`
+	Width   int    `json:"width"`
+	Height  int    `json:"height"`
+}
+
+// Frame is a single captured screen frame held entirely in memory (spec §11:
+// capture → memory → encode → transmit → discard). The raw pixels live in
+// Image; encoding to a wire format is done by the platform-independent screen
+// package so it is testable on any OS. CaptureMs records how long the host grab
+// itself took, for the performance budget Grab Screen is meant to keep.
+type Frame struct {
+	DisplayID  string
+	Width      int
+	Height     int
+	Image      image.Image
+	CapturedAt time.Time
+	CaptureMs  int64
+}
+
 // Provider is the full set of host capabilities used by Milestone 1. It is kept
 // deliberately narrow (spec §18: keep endpoints and capabilities narrow); later
 // milestones extend it behind the same interface rather than widening handlers.
@@ -78,4 +138,18 @@ type Provider interface {
 	// implementation's responsibility. Closing an app that is not running is
 	// not an error.
 	CloseApp(name string) error
+
+	// Displays lists the host's connected displays, with exactly one marked
+	// primary when any are present. It returns ErrUnavailable on a host that
+	// cannot enumerate displays.
+	Displays() ([]DisplayInfo, error)
+
+	// CaptureFrame captures a single frame of the identified display into
+	// memory and returns it. An empty displayID selects the primary display.
+	// The implementation uses only normal, supported OS capture APIs and never
+	// attempts to defeat an OS security boundary: a protected or secure surface
+	// that the OS refuses to hand over is reported as an error, not bypassed
+	// (THIRD ARTILLERY ORDER, spec §11). An unknown displayID returns
+	// ErrNoSuchDisplay; an unsupported host returns ErrUnavailable.
+	CaptureFrame(displayID string) (Frame, error)
 }
