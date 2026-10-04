@@ -1,5 +1,7 @@
 package platform
 
+import "fmt"
+
 // Fake is an in-memory Provider for tests. It records the actions invoked on it
 // and lets a test inject return values and failures, so the agent's host-facing
 // behaviour (PANIC sequencing, control handlers) can be verified without a real
@@ -16,13 +18,15 @@ type Fake struct {
 	LockErr   error
 	VolumeErr error
 	MuteErr   error
-	CloseErr  error
+	CloseErr  error           // fails every CloseApp call
+	FailApps  map[string]bool // fails CloseApp only for these image names
 
 	// Recorded calls, in order.
-	Locks      int
-	Volumes    []int
-	Mutes      []bool
-	ClosedApps []string
+	Locks         int
+	Volumes       []int
+	Mutes         []bool
+	ClosedApps    []string // apps that closed successfully
+	CloseAttempts []string // every app CloseApp was called for, success or not
 }
 
 func (f *Fake) DeviceName() string { return f.Name }
@@ -57,8 +61,12 @@ func (f *Fake) SetMuted(muted bool) error {
 }
 
 func (f *Fake) CloseApp(name string) error {
+	f.CloseAttempts = append(f.CloseAttempts, name)
 	if f.CloseErr != nil {
 		return f.CloseErr
+	}
+	if f.FailApps[name] {
+		return fmt.Errorf("cannot close %s", name)
 	}
 	f.ClosedApps = append(f.ClosedApps, name)
 	return nil

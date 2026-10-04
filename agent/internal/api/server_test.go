@@ -1,10 +1,13 @@
 package api
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,11 +20,14 @@ import (
 )
 
 type harness struct {
-	srv   *httptest.Server
-	cred  auth.Credential
-	fake  *platform.Fake
-	log   *audit.Logger
-	nonce int
+	srv      *httptest.Server
+	reg      *auth.Registry
+	devID    string
+	devKey   []byte
+	adminKey []byte
+	fake     *platform.Fake
+	log      *audit.Logger
+	nonce    int
 }
 
 func newHarness(t *testing.T, fake *platform.Fake) *harness {
@@ -32,39 +38,76 @@ func newHarness(t *testing.T, fake *platform.Fake) *harness {
 	}
 	t.Cleanup(func() { log.Close() })
 
-	cred, _ := auth.GenerateCredential()
-	verifier := auth.NewVerifier(cred, 30*time.Second)
+	reg, err := auth.OpenRegistry(filepath.Join(t.TempDir(), "devices.json"), auth.NewProtector())
+	if err != nil {
+		t.Fatalf("OpenRegistry: %v", err)
+	}
+	devKey := randomKey(t)
+	if err := reg.Add(&auth.Device{ID: "dev-1", DisplayName: "iPhone", Key: devKey, CreatedAt: time.Now(), ProtocolVersion: 1}); err != nil {
+		t.Fatalf("Add device: %v", err)
+	}
+	adminKey := randomKey(t)
+
+	authn := auth.NewAuthenticator(reg, adminKey, 30*time.Second)
+	pairing := auth.NewPairingManager(reg, log, 5*time.Minute, 30*time.Second)
 	panicSvc := control.NewPanicService(fake, log, nil)
-	handler := New(fake, log, verifier, panicSvc).Handler()
+	handler := New(fake, log, authn, pairing, reg, panicSvc, true).Handler()
 
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	return &harness{srv: srv, cred: cred, fake: fake, log: log}
+	return &harness{srv: srv, reg: reg, devID: "dev-1", devKey: devKey, adminKey: adminKey, fake: fake, log: log}
 }
 
-// do signs and sends a request. If sign is false the auth headers are omitted.
+func randomKey(t *testing.T) []byte {
+	t.Helper()
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	return b
+}
+
+// do signs and sends a request as the harness's paired device. If sign is false
+// the auth headers are omitted.
 func (h *harness) do(t *testing.T, method, path, body string, sign bool) *http.Response {
+	t.Helper()
+	if !sign {
+		return h.send(t, method, path, body, nil)
+	}
+	return h.sendSigned(t, h.devID, h.devKey, method, path, body)
+}
+
+// doAdmin signs and sends a request with the admin key.
+func (h *harness) doAdmin(t *testing.T, method, path, body string) *http.Response {
+	t.Helper()
+	return h.sendSigned(t, "admin", h.adminKey, method, path, body)
+}
+
+func (h *harness) sendSigned(t *testing.T, deviceID string, key []byte, method, path, body string) *http.Response {
+	t.Helper()
+	h.nonce++
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	nonce := "n" + strconv.Itoa(h.nonce)
+	sig := auth.Signature(key, auth.SignedRequest{
+		DeviceID: deviceID, Method: method, Path: path,
+		Timestamp: ts, Nonce: nonce, Body: []byte(body),
+	})
+	return h.send(t, method, path, body, map[string]string{
+		auth.HeaderDevice:    deviceID,
+		auth.HeaderTimestamp: ts,
+		auth.HeaderNonce:     nonce,
+		auth.HeaderSignature: sig,
+	})
+}
+
+func (h *harness) send(t *testing.T, method, path, body string, headers map[string]string) *http.Response {
 	t.Helper()
 	req, err := http.NewRequest(method, h.srv.URL+path, strings.NewReader(body))
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
-	if sign {
-		h.nonce++
-		ts := strconv.FormatInt(time.Now().Unix(), 10)
-		nonce := "n" + strconv.Itoa(h.nonce)
-		sig := auth.Signature(h.cred.Key, auth.SignedRequest{
-			DeviceID:  h.cred.DeviceID,
-			Method:    method,
-			Path:      path,
-			Timestamp: ts,
-			Nonce:     nonce,
-			Body:      []byte(body),
-		})
-		req.Header.Set(auth.HeaderDevice, h.cred.DeviceID)
-		req.Header.Set(auth.HeaderTimestamp, ts)
-		req.Header.Set(auth.HeaderNonce, nonce)
-		req.Header.Set(auth.HeaderSignature, sig)
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	resp, err := h.srv.Client().Do(req)
 	if err != nil {
@@ -212,13 +255,13 @@ func TestReplayRejectedEndToEnd(t *testing.T) {
 	// Build one signed request and send its exact bytes twice.
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
 	nonce := "replay-1"
-	sig := auth.Signature(h.cred.Key, auth.SignedRequest{
-		DeviceID: h.cred.DeviceID, Method: "POST", Path: "/v1/control/lock",
+	sig := auth.Signature(h.devKey, auth.SignedRequest{
+		DeviceID: h.devID, Method: "POST", Path: "/v1/control/lock",
 		Timestamp: ts, Nonce: nonce, Body: nil,
 	})
 	send := func() int {
 		req, _ := http.NewRequest("POST", h.srv.URL+"/v1/control/lock", nil)
-		req.Header.Set(auth.HeaderDevice, h.cred.DeviceID)
+		req.Header.Set(auth.HeaderDevice, h.devID)
 		req.Header.Set(auth.HeaderTimestamp, ts)
 		req.Header.Set(auth.HeaderNonce, nonce)
 		req.Header.Set(auth.HeaderSignature, sig)
@@ -234,5 +277,161 @@ func TestReplayRejectedEndToEnd(t *testing.T) {
 	}
 	if code := send(); code != http.StatusUnauthorized {
 		t.Fatalf("replayed send = %d, want 401", code)
+	}
+}
+
+// --- Milestone 2: pairing, revocation and admin transport over HTTP ---
+
+func TestUnknownDeviceRejected(t *testing.T) {
+	h := newHarness(t, &platform.Fake{})
+	// Well-formed signed request, but the device id is not registered.
+	resp := h.sendSigned(t, "ghost", randomKey(t), "GET", "/v1/status", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unknown device status = %d, want 401", resp.StatusCode)
+	}
+}
+
+// pairOverHTTP runs a full pairing exchange and returns the new device's id and
+// its independently derived permanent key.
+func pairOverHTTP(t *testing.T, h *harness, displayName string) (string, []byte) {
+	t.Helper()
+	// Owner opens the pairing window via the admin channel.
+	startResp := h.doAdmin(t, "POST", "/v1/admin/pairing/start", "")
+	if startResp.StatusCode != http.StatusOK {
+		t.Fatalf("pairing start = %d, want 200", startResp.StatusCode)
+	}
+	start := decode[pairingStartResponse](t, startResp)
+	if start.Code == "" {
+		t.Fatalf("pairing start returned empty code")
+	}
+
+	// Operator contributes a nonce and signs the request with the code.
+	dn := randomKey(t)[:16]
+	dnB64 := base64.StdEncoding.EncodeToString(dn)
+	body, _ := json.Marshal(auth.PairRequest{DisplayName: displayName, DeviceNonce: dnB64})
+	resp := h.sendSigned(t, "pairing", []byte(start.Code), "POST", "/v1/pair", string(body))
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pair = %d, want 200", resp.StatusCode)
+	}
+	res := decode[auth.PairResult](t, resp)
+
+	key, err := auth.DeriveDeviceKey(start.Code, res.AgentNonce, dnB64)
+	if err != nil {
+		t.Fatalf("DeriveDeviceKey: %v", err)
+	}
+	return res.DeviceID, key
+}
+
+func TestPairedDeviceCanAuthenticate(t *testing.T) {
+	h := newHarness(t, &platform.Fake{})
+	id, key := pairOverHTTP(t, h, "New iPhone")
+
+	// The freshly paired device authenticates a normal request.
+	resp := h.sendSigned(t, id, key, "GET", "/v1/status", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("paired device status = %d, want 200", resp.StatusCode)
+	}
+
+	// DEVICE_PAIRED was audited.
+	var paired bool
+	for _, e := range h.log.Recent(0, audit.ClassSecurity) {
+		if strings.Contains(e.Message, "DEVICE_PAIRED") {
+			paired = true
+		}
+	}
+	if !paired {
+		t.Fatalf("DEVICE_PAIRED not audited")
+	}
+}
+
+func TestRevocationIsImmediateOverHTTP(t *testing.T) {
+	h := newHarness(t, &platform.Fake{})
+	id, key := pairOverHTTP(t, h, "Doomed")
+
+	// Works before revocation.
+	if resp := h.sendSigned(t, id, key, "GET", "/v1/status", ""); resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("pre-revoke status = %d, want 200", resp.StatusCode)
+	}
+
+	// Revoke via admin.
+	revResp := h.doAdmin(t, "POST", "/v1/admin/devices/revoke", `{"deviceId":"`+id+`"}`)
+	if revResp.StatusCode != http.StatusOK {
+		t.Fatalf("revoke = %d, want 200", revResp.StatusCode)
+	}
+	rev := decode[map[string]any](t, revResp)
+	if rev["revoked"] != true {
+		t.Fatalf("revoke result = %v", rev)
+	}
+
+	// The next request from that device is immediately rejected.
+	resp := h.sendSigned(t, id, key, "GET", "/v1/status", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("post-revoke status = %d, want 401", resp.StatusCode)
+	}
+
+	var revoked bool
+	for _, e := range h.log.Recent(0, audit.ClassSecurity) {
+		if strings.Contains(e.Message, "DEVICE_REVOKED") {
+			revoked = true
+		}
+	}
+	if !revoked {
+		t.Fatalf("DEVICE_REVOKED not audited")
+	}
+}
+
+func TestDeviceListExposesNoSecret(t *testing.T) {
+	h := newHarness(t, &platform.Fake{})
+	pairOverHTTP(t, h, "Listed")
+
+	resp := h.doAdmin(t, "GET", "/v1/admin/devices", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("devices = %d, want 200", resp.StatusCode)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if strings.Contains(strings.ToLower(string(raw)), "\"key\"") {
+		t.Fatalf("device listing exposed a key field: %s", raw)
+	}
+	// Two devices: the seeded one plus the newly paired one.
+	var out struct {
+		Devices []auth.Info `json:"devices"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Devices) != 2 {
+		t.Fatalf("want 2 devices listed, got %d", len(out.Devices))
+	}
+}
+
+func TestAdminRejectedFromNonLoopback(t *testing.T) {
+	log, _ := audit.New(t.TempDir(), 0)
+	defer log.Close()
+	reg, _ := auth.OpenRegistry(filepath.Join(t.TempDir(), "d.json"), auth.NewProtector())
+	authn := auth.NewAuthenticator(reg, randomKey(t), 30*time.Second)
+	pairing := auth.NewPairingManager(reg, log, 5*time.Minute, 30*time.Second)
+	handler := New(&platform.Fake{}, log, authn, pairing, reg, control.NewPanicService(&platform.Fake{}, log, nil), true).Handler()
+
+	// Loopback-only is on: a non-loopback origin is refused before auth.
+	req := httptest.NewRequest("POST", "/v1/admin/devices/revoke", strings.NewReader(`{"deviceId":"x"}`))
+	req.RemoteAddr = "203.0.113.5:1234"
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("non-loopback admin = %d, want 403", rr.Code)
+	}
+
+	// From loopback but unsigned, it reaches auth and is rejected there.
+	req2 := httptest.NewRequest("POST", "/v1/admin/devices/revoke", strings.NewReader(`{"deviceId":"x"}`))
+	req2.RemoteAddr = "127.0.0.1:5555"
+	rr2 := httptest.NewRecorder()
+	handler.ServeHTTP(rr2, req2)
+	if rr2.Code != http.StatusUnauthorized {
+		t.Fatalf("loopback unsigned admin = %d, want 401", rr2.Code)
 	}
 }
