@@ -15,12 +15,14 @@ owner-initiated actions described here. See
 
 ## Milestone status
 
-This repository currently implements **Milestone 0** (repository structure,
-config model, audit logging, test harness) and **Milestone 1** (Windows agent:
-real status, activity/idle, lock, mute, PANIC sequencing, and local
-authentication). Later milestones — secure pairing/transport, the SwiftUI
-Operator client, Grab Screen, Sentinel arm/disarm events, Terminal, and service
-packaging — are not yet built.
+This repository currently implements:
+
+- **Milestone 0** — repository structure, config model, audit logging, test harness.
+- **Milestone 1** — Windows agent: real status, activity/idle, lock, mute, PANIC sequencing, local authentication.
+- **Milestone 2** — secure remote transport and device pairing: an owner-initiated, expiring pairing flow; a protected authorized-device registry supporting multiple devices; per-device HMAC authentication with replay/stale/tamper protection; immediate revocation; a configurable bind address; and an audit trail for pairing, authentication and revocation.
+
+Later milestones — the SwiftUI Operator client, Grab Screen, Sentinel
+arm/disarm events, Terminal, and service packaging — are not yet built.
 
 ## Repository layout
 

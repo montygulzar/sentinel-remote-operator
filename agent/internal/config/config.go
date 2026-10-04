@@ -25,12 +25,27 @@ type Config struct {
 	// (spec §3), never by binding to a public interface here.
 	Listen string `json:"listen"`
 
-	// DataDir is the root for persistent agent state (credential, logs).
+	// DataDir is the root for persistent agent state (device registry, admin
+	// key, logs).
 	DataDir string `json:"dataDir"`
 
-	Panic PanicConfig `json:"panic"`
-	Auth  AuthConfig  `json:"auth"`
-	Log   LogConfig   `json:"log"`
+	// AdminLoopbackOnly restricts owner/admin endpoints (pairing initiation and
+	// device management) to requests originating from the local machine, so
+	// pairing and revocation can only be driven by someone with local access to
+	// the Windows host even when the control API is reachable over the overlay
+	// network. Default true.
+	AdminLoopbackOnly bool `json:"adminLoopbackOnly"`
+
+	Panic   PanicConfig   `json:"panic"`
+	Auth    AuthConfig    `json:"auth"`
+	Pairing PairingConfig `json:"pairing"`
+	Log     LogConfig     `json:"log"`
+}
+
+// PairingConfig tunes the device pairing window (spec §13).
+type PairingConfig struct {
+	// TTL is how long an owner-initiated pairing window stays open.
+	TTL Duration `json:"ttl"`
 }
 
 // PanicConfig configures the PANIC preset (spec §7).
@@ -56,8 +71,11 @@ type LogConfig struct {
 // LogsDir returns the directory holding daily audit log files.
 func (c Config) LogsDir() string { return filepath.Join(c.DataDir, "Logs") }
 
-// CredentialPath returns the file holding the paired device credential.
-func (c Config) CredentialPath() string { return filepath.Join(c.DataDir, "credential.json") }
+// DevicesPath returns the file holding the authorized-device registry.
+func (c Config) DevicesPath() string { return filepath.Join(c.DataDir, "devices.json") }
+
+// AdminKeyPath returns the file holding the protected owner/admin key.
+func (c Config) AdminKeyPath() string { return filepath.Join(c.DataDir, "admin.key") }
 
 // DefaultConfigPath returns the default location of the agent's config file.
 func DefaultConfigPath() string { return filepath.Join(defaultDataDir(), "config.json") }
@@ -65,12 +83,14 @@ func DefaultConfigPath() string { return filepath.Join(defaultDataDir(), "config
 // Default returns a configuration with safe defaults for the current host.
 func Default() Config {
 	return Config{
-		DeviceName: "",
-		Listen:     "127.0.0.1:8787",
-		DataDir:    defaultDataDir(),
-		Panic:      PanicConfig{CloseApps: []string{}},
-		Auth:       AuthConfig{TimestampSkew: Duration(30 * time.Second)},
-		Log:        LogConfig{RetentionDays: 30},
+		DeviceName:        "",
+		Listen:            "127.0.0.1:8787",
+		DataDir:           defaultDataDir(),
+		AdminLoopbackOnly: true,
+		Panic:             PanicConfig{CloseApps: []string{}},
+		Auth:              AuthConfig{TimestampSkew: Duration(30 * time.Second)},
+		Pairing:           PairingConfig{TTL: Duration(5 * time.Minute)},
+		Log:               LogConfig{RetentionDays: 30},
 	}
 }
 
@@ -143,6 +163,9 @@ func (c Config) validate() error {
 	}
 	if time.Duration(c.Auth.TimestampSkew) <= 0 {
 		return fmt.Errorf("auth.timestampSkew must be positive")
+	}
+	if time.Duration(c.Pairing.TTL) <= 0 {
+		return fmt.Errorf("pairing.ttl must be positive")
 	}
 	if c.Log.RetentionDays < 0 {
 		return fmt.Errorf("log.retentionDays must not be negative")

@@ -11,11 +11,14 @@ import (
 	"github.com/montygulzar/sentinel-remote-operator/agent/internal/platform"
 )
 
-// StepResult is the outcome of one PANIC step.
+// StepResult is the outcome of one PANIC step. Steps carries per-item results
+// for a step that fans out over several targets (the per-application results of
+// closeConfiguredApps), so a caller can see exactly which items failed.
 type StepResult struct {
-	Name  string `json:"name"`
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	Name  string       `json:"name"`
+	OK    bool         `json:"ok"`
+	Error string       `json:"error,omitempty"`
+	Steps []StepResult `json:"steps,omitempty"`
 }
 
 // Result is the structured outcome of a PANIC execution (spec §19).
@@ -47,8 +50,11 @@ func (s *PanicService) Execute() Result {
 	start := s.now()
 	s.log.Log(audit.ClassCommand, "PANIC received")
 
+	// Every step is evaluated here, so a failure in one does not prevent the
+	// others: PANIC secures as much as possible (spec §7). closeConfiguredApps
+	// itself attempts every configured application before returning.
 	actions := []StepResult{
-		s.step("closeConfiguredApps", s.closeConfiguredApps),
+		s.closeConfiguredApps(),
 		s.step("mute", func() error { return s.provider.SetVolume(0) }),
 		s.step("lock", s.provider.Lock),
 	}
@@ -57,7 +63,6 @@ func (s *PanicService) Execute() Result {
 	for _, a := range actions {
 		if !a.OK {
 			ok = false
-			break
 		}
 	}
 
@@ -81,14 +86,25 @@ func (s *PanicService) step(name string, fn func() error) StepResult {
 	return StepResult{Name: name, OK: true}
 }
 
-// closeConfiguredApps closes each configured application in order. Closing an
-// app that is not running is not an error (that is the Provider's contract), so
-// this fails only on a real inability to close one.
-func (s *PanicService) closeConfiguredApps() error {
+// closeConfiguredApps attempts to close every configured application in order,
+// continuing past any individual failure so that one stubborn application does
+// not leave the rest open (spec §7, Milestone 2 review). Each attempt is
+// recorded as a sub-result; the step is OK only if every application closed.
+// Closing an app that is not running is not an error (Provider contract).
+func (s *PanicService) closeConfiguredApps() StepResult {
+	step := StepResult{Name: "closeConfiguredApps", OK: true}
 	for _, app := range s.closeApps {
 		if err := s.provider.CloseApp(app); err != nil {
-			return err
+			s.log.Log(audit.ClassError, "PANIC close %s failed: %v", app, err)
+			step.Steps = append(step.Steps, StepResult{Name: app, OK: false, Error: err.Error()})
+			step.OK = false
+			continue
 		}
+		s.log.Log(audit.ClassAction, "PANIC closed %s", app)
+		step.Steps = append(step.Steps, StepResult{Name: app, OK: true})
 	}
-	return nil
+	if !step.OK {
+		step.Error = "one or more applications failed to close"
+	}
+	return step
 }

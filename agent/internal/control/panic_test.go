@@ -102,3 +102,46 @@ func TestPanicNoConfiguredAppsSucceeds(t *testing.T) {
 		t.Fatalf("no apps should have been closed: %v", fake.ClosedApps)
 	}
 }
+
+func TestPanicAttemptsEveryAppDespiteFailures(t *testing.T) {
+	// The middle app fails to close; the others must still be attempted, and
+	// PANIC must still proceed to mute and lock.
+	fake := &platform.Fake{FailApps: map[string]bool{"stubborn.exe": true}}
+	svc := NewPanicService(fake, newLog(t), []string{"a.exe", "stubborn.exe", "b.exe"})
+
+	res := svc.Execute()
+
+	// Every configured app was attempted, in order.
+	want := []string{"a.exe", "stubborn.exe", "b.exe"}
+	if len(fake.CloseAttempts) != 3 {
+		t.Fatalf("attempts = %v, want all three", fake.CloseAttempts)
+	}
+	for i, name := range want {
+		if fake.CloseAttempts[i] != name {
+			t.Fatalf("attempt %d = %q, want %q", i, fake.CloseAttempts[i], name)
+		}
+	}
+
+	// The close step reports partial failure with per-app detail.
+	closeStep := res.Actions[0]
+	if closeStep.Name != "closeConfiguredApps" || closeStep.OK {
+		t.Fatalf("close step should be partial failure: %+v", closeStep)
+	}
+	if len(closeStep.Steps) != 3 {
+		t.Fatalf("want 3 per-app results, got %+v", closeStep.Steps)
+	}
+	if closeStep.Steps[0].OK != true || closeStep.Steps[1].OK != false || closeStep.Steps[2].OK != true {
+		t.Fatalf("per-app results wrong: %+v", closeStep.Steps)
+	}
+
+	// PANIC still muted and locked after the app-close failure.
+	if len(fake.Volumes) != 1 || fake.Volumes[0] != 0 {
+		t.Fatalf("volume not zeroed after close failure: %v", fake.Volumes)
+	}
+	if fake.Locks != 1 {
+		t.Fatalf("workstation not locked after close failure: %d", fake.Locks)
+	}
+	if res.OK {
+		t.Fatalf("overall result should be partial failure")
+	}
+}
