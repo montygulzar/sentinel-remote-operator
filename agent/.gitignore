@@ -1,0 +1,4 @@
+# Build artifacts
+/sentinel-agent
+/SentinelAgent.exe
+*.exe
