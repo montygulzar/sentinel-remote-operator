@@ -4,11 +4,12 @@
 //
 // Subcommands:
 //
-//	run       Run the agent in the foreground (default).
-//	pair      Open a pairing window and print the one-time code for an Operator.
-//	devices   List authorized Operator devices.
-//	revoke    Revoke an Operator device by id.
-//	version   Print version information.
+//	run              Run the agent in the foreground (default).
+//	pair             Open a pairing window and print the one-time code for an Operator.
+//	devices          List authorized Operator devices.
+//	revoke           Revoke an Operator device by id.
+//	diagnose-screen  Locally capture one screen frame to a file (field verification).
+//	version          Print version information.
 //
 // The pair/devices/revoke commands talk to the running agent over loopback and
 // authenticate with the owner/admin key read from the protected local store;
@@ -66,11 +67,13 @@ func run(args []string) error {
 		return cmdDevices(rest)
 	case "revoke":
 		return cmdRevoke(rest)
+	case "diagnose-screen":
+		return cmdDiagnoseScreen(rest)
 	case "version":
 		fmt.Printf("sentinel-agent %s\n", version)
 		return nil
 	default:
-		return fmt.Errorf("unknown command %q (use run, pair, devices, revoke, or version)", cmd)
+		return fmt.Errorf("unknown command %q (use run, pair, devices, revoke, diagnose-screen, or version)", cmd)
 	}
 }
 

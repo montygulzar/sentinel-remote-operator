@@ -69,6 +69,25 @@ with the owner/admin key read from the protected local store. No permanent
 device secret is ever printed or logged; the only material shown is the
 ephemeral pairing code.
 
+## Field verification
+
+`diagnose-screen` is a local, owner-only helper for verifying the Windows GDI
+capture path without the Operator or any pairing:
+
+```sh
+sentinel-agent diagnose-screen -out .\sentinel-diagnostic.jpg
+# optional: -display <id>  -format jpeg|png  -quality 1..100
+```
+
+It runs in-process from the CLI — no port, no HTTP route, no credential — and
+drives the exact `CaptureFrame` + encode path that `GET /v1/screen/grab` uses,
+defaulting to the primary display. It writes one explicitly-named diagnostic
+image to the path you give and reports the captured display id, dimensions,
+capture and encode time, and output byte size. This is the only path that
+writes a capture to disk; normal Grab Screen stays capture → memory → transmit
+→ discard with no screenshot artifact. It is unavailable on non-Windows hosts
+(reported honestly, no file written).
+
 ## Configuration
 
 Configuration is JSON. Defaults are written on first run; unknown fields are
