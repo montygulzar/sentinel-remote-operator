@@ -1,0 +1,81 @@
+{
+  "description": "Locked HMAC-SHA256 request-signing vectors shared by the Go agent and the Swift Operator. Both implementations must reproduce each expectedSignature exactly. Regenerate with `go run ./cmd/genvec`.",
+  "algorithm": "signature = hex(HMAC_SHA256(key, canonical)); key = base64decode(keyBase64); bodyHash = hex(SHA256(utf8(body)))",
+  "canonical": [
+    "deviceId",
+    "UPPERCASE(method)",
+    "path (incl. query)",
+    "timestamp",
+    "nonce",
+    "hex(sha256(body))",
+    "joined with \\n"
+  ],
+  "vectors": [
+    {
+      "name": "status-get-empty-body",
+      "deviceId": "dev-7Qx2",
+      "keyBase64": "ERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzA=",
+      "method": "GET",
+      "path": "/v1/status",
+      "timestamp": "1700000000",
+      "nonce": "nonce-aaaa",
+      "body": "",
+      "expectedSignature": "917a5e9c74b93a6a89b99206baecec20704597ad42beba5510752fc788e50178"
+    },
+    {
+      "name": "mute-post-json-body",
+      "deviceId": "dev-7Qx2",
+      "keyBase64": "ERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzA=",
+      "method": "POST",
+      "path": "/v1/control/mute",
+      "timestamp": "1700000123",
+      "nonce": "nonce-bbbb",
+      "body": "{\"muted\":true}",
+      "expectedSignature": "133b9bcc035dcb89a411a33f244c0ce3ba81fe3eba159a30f4a7c5917573fa16"
+    },
+    {
+      "name": "panic-post-empty-body",
+      "deviceId": "dev-7Qx2",
+      "keyBase64": "ERITFBUWFxgZGhscHR4fICEiIyQlJicoKSorLC0uLzA=",
+      "method": "POST",
+      "path": "/v1/control/panic",
+      "timestamp": "1700000200",
+      "nonce": "nonce-cccc",
+      "body": "",
+      "expectedSignature": "945b1dbde0fb771003ba6d5cc747458acb33da7dffb783da40585443db67afd4"
+    },
+    {
+      "name": "screen-grab-with-query",
+      "deviceId": "dev-K9z",
+      "keyBase64": "WltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHk=",
+      "method": "GET",
+      "path": "/v1/screen/grab?display=DISPLAY2&format=png",
+      "timestamp": "1700000300",
+      "nonce": "nonce-dddd",
+      "body": "",
+      "expectedSignature": "7867b929b039e62ccd1b2c704ca8a9bfca9aa71927b05325f28c2bb5bd8fb2cd"
+    },
+    {
+      "name": "unicode-body",
+      "deviceId": "dev-K9z",
+      "keyBase64": "WltcXV5fYGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHk=",
+      "method": "POST",
+      "path": "/v1/pair",
+      "timestamp": "1700000400",
+      "nonce": "nonce-eeee",
+      "body": "{\"displayName\":\"café ☕\"}",
+      "expectedSignature": "b96bc67d71e48175c5d54aa8bcd1a2f671ee81689d3d7e46d9ee4e6d0656f569"
+    },
+    {
+      "name": "admin-devices-list",
+      "deviceId": "admin",
+      "keyBase64": "o6SlpqeoqaqrrK2ur7CxsrO0tba3uLm6u7y9vr/AwcI=",
+      "method": "GET",
+      "path": "/v1/admin/devices",
+      "timestamp": "1700000500",
+      "nonce": "nonce-ffff",
+      "body": "",
+      "expectedSignature": "b69820a45ec6fe138153fee5db5e9108b2da22567728a2dc226c8aff5cc76197"
+    }
+  ]
+}

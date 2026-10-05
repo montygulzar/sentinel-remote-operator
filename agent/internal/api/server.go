@@ -57,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/status", s.deviceAuth(s.handleStatus))
 	mux.HandleFunc("GET /v1/activity", s.deviceAuth(s.handleActivity))
 	mux.HandleFunc("GET /v1/logs", s.deviceAuth(s.handleLogs))
+	mux.HandleFunc("GET /v1/screen/grab", s.deviceAuth(s.handleScreenGrab))
 	mux.HandleFunc("POST /v1/control/lock", s.deviceAuth(s.handleLock))
 	mux.HandleFunc("POST /v1/control/mute", s.deviceAuth(s.handleMute))
 	mux.HandleFunc("POST /v1/control/panic", s.deviceAuth(s.handlePanic))
